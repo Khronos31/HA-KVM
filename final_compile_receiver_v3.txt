@@ -1,0 +1,5 @@
+Processing receiver (platform: https://github.com/pioarduino/platform-espressif32/releases/download/stable/platform-espressif32.zip; board: m5stack-atoms3; framework: arduino)
+--------------------------------------------------------------------------------
+Tool Manager: Installing git+https://github.com/pioarduino/arduino-esp32.git#3.0.7
+git version 2.53.0.windows.2
+Cloning into 'C:\Users\yunomin61\.platformio\.cache\tmp\pkg-installing-cd7natxv'...

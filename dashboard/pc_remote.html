@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            background: #111;
+            overflow: hidden;
+            font-family: monospace;
+        }
+
+        #main-container {
+            display: flex;
+            width: 100%;
+            height: 100%;
+            box-sizing: border-box;
+        }
+
+        #debug-zone {
+            flex: 2;
+            background: #000;
+            color: #00ff00;
+            padding: 5px;
+            font-size: 10px;
+            border-right: 1px solid #333;
+            display: flex;
+            flex-direction: column;
+            /* 上から下へ配置 */
+            overflow: hidden;
+        }
+
+        #ws-status {
+            font-weight: bold;
+            margin-bottom: 5px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 5px;
+        }
+
+        #realtime-status {
+            color: #ffcc00;
+            white-space: pre-wrap;
+            margin-bottom: 5px;
+            border-bottom: 1px dashed #333;
+            padding-bottom: 5px;
+        }
+
+        #log-container {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column-reverse;
+        }
+
+        #input-zone {
+            flex: 3;
+            position: relative;
+            background: #1a1a1a;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-right: 1px solid #333;
+        }
+
+        #pc-input {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            opacity: 0.01;
+            cursor: pointer;
+            pointer-events: auto;
+        }
+
+        .guide-text {
+            color: #00fbff;
+            font-weight: bold;
+            font-size: 14px;
+            pointer-events: none;
+            text-align: center;
+            border: 1px solid #00fbff;
+            padding: 5px 10px;
+        }
+
+        #button-zone {
+            flex: 3;
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            grid-template-rows: repeat(1, 1fr);
+            gap: 4px;
+            padding: 4px;
+            background: #222;
+        }
+
+        .action-btn {
+            background: #333;
+            color: #eee;
+            border: 1px solid #444;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: 0.1s;
+        }
+
+        .action-btn:active {
+            background: #555;
+            transform: scale(0.95);
+        }
+    </style>
+</head>
+
+<body>
+    <div id="main-container">
+        <div id="debug-zone">
+            <div id="ws-status">WS: Connecting...</div>
+            <div id="realtime-status">Waiting for Gamepad...</div>
+            <div id="log-container"></div>
+        </div>
+        <div id="input-zone">
+            <div class="guide-text" id="guide-text">TAP TO ACTIVATE</div>
+            <input type="text" id="pc-input" spellcheck="false" autocomplete="off" autocapitalize="none"
+                autocorrect="off" inputmode="email">
+        </div>
+        <div id="button-zone">
+            <div class="action-btn" onclick="btnAction(1)" style="color: #ff4444; font-weight: bold;">Reboot</div>
+            <div class="action-btn" onclick="btnAction(2)">Btn 2</div>
+            <div class="action-btn" onclick="btnAction(3)">Btn 3</div>
+            <div class="action-btn" onclick="btnAction(4)">Btn 4</div>
+            <div class="action-btn" onclick="btnAction(5)">Btn 5</div>
+            <div class="action-btn" onclick="btnAction(6)">Btn 6</div>
+        </div>
+    </div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const ATOM_IP = urlParams.get('ip') || "192.168.1.150";
+        const WS_URL = `ws://${ATOM_IP}:81`;
+        const WHEEL_SPEED = 2;
+
+        const HID_MAP = {
+            "ControlLeft": 0x80, "ShiftLeft": 0x81, "AltLeft": 0x82, "MetaLeft": 0x83,
+            "ControlRight": 0x84, "ShiftRight": 0x85, "AltRight": 0x86, "MetaRight": 0x87,
+            "KeyA": 0x04, "KeyB": 0x05, "KeyC": 0x06, "KeyD": 0x07, "KeyE": 0x08, "KeyF": 0x09,
+            "KeyG": 0x0A, "KeyH": 0x0B, "KeyI": 0x0C, "KeyJ": 0x0D, "KeyK": 0x0E, "KeyL": 0x0F,
+            "KeyM": 0x10, "KeyN": 0x11, "KeyO": 0x12, "KeyP": 0x13, "KeyQ": 0x14, "KeyR": 0x15,
+            "KeyS": 0x16, "KeyT": 0x17, "KeyU": 0x18, "KeyV": 0x19, "KeyW": 0x1A, "KeyX": 0x1B,
+            "KeyY": 0x1C, "KeyZ": 0x1D, "Digit1": 0x1E, "Digit2": 0x1F, "Digit3": 0x20, "Digit4": 0x21,
+            "Digit5": 0x22, "Digit6": 0x23, "Digit7": 0x24, "Digit8": 0x25, "Digit9": 0x26, "Digit0": 0x27,
+            "Enter": 0x28, "Escape": 0x29, "Backspace": 0x2A, "Tab": 0x2B, "Space": 0x2C, "Minus": 0x2D,
+            "Equal": 0x2E, "BracketLeft": 0x2F, "BracketRight": 0x30, "Backslash": 0x31, "Semicolon": 0x33,
+            "Quote": 0x34, "Backquote": 0x35, "Comma": 0x36, "Period": 0x37, "Slash": 0x38, "CapsLock": 0x39,
+            "F1": 0x3A, "F2": 0x3B, "F3": 0x3C, "F4": 0x3D, "F5": 0x3E, "F6": 0x3F, "F7": 0x40, "F8": 0x41,
+            "F9": 0x42, "F10": 0x43, "F11": 0x44, "F12": 0x45, "ArrowRight": 0x4F, "ArrowLeft": 0x50,
+            "ArrowDown": 0x51, "ArrowUp": 0x52, "Delete": 0x4C
+        };
+
+        const ANDROID_MAP = {
+            "a": 0x04, "b": 0x05, "c": 0x06, "d": 0x07, "e": 0x08, "f": 0x09, "g": 0x0A, "h": 0x0B,
+            "i": 0x0C, "j": 0x0D, "k": 0x0E, "l": 0x0F, "m": 0x10, "n": 0x11, "o": 0x12, "p": 0x13,
+            "q": 0x14, "r": 0x15, "s": 0x16, "t": 0x17, "u": 0x18, "v": 0x19, "w": 0x1A, "x": 0x1B,
+            "y": 0x1C, "z": 0x1D, "1": 0x1E, "2": 0x1F, "3": 0x20, "4": 0x21, "5": 0x22, "6": 0x23,
+            "7": 0x24, "8": 0x25, "9": 0x26, "0": 0x27, " ": 0x2C, "Enter": 0x28, "Backspace": 0x2A, "Delete": 0x4C
+        };
+
+        const input = document.getElementById('pc-input');
+        const logContainer = document.getElementById('log-container');
+        const wsStatus = document.getElementById('ws-status');
+        const rtStatus = document.getElementById('realtime-status');
+        const guideText = document.getElementById('guide-text');
+
+        let socket = null;
+        let isPhysicalKeyDown = false;
+        let gamepadIndex = null;
+        let lastGamepadSeq = -1;
+
+        function addLog(msg) {
+            const entry = document.createElement('div');
+            entry.innerText = `[${new Date().toLocaleTimeString().split(' ')[0]}] ${msg}`;
+            logContainer.prepend(entry);
+            // ログ履歴を50件まで残すように拡張
+            if (logContainer.childNodes.length > 50) logContainer.lastChild.remove();
+        }
+
+        function connectWS() {
+            socket = new WebSocket(WS_URL);
+            socket.onopen = () => {
+                wsStatus.innerText = `WS: Connected (${ATOM_IP})`;
+                wsStatus.style.color = "#00ff00";
+            };
+            socket.onclose = () => {
+                wsStatus.innerText = "WS: Disconnected";
+                wsStatus.style.color = "#ff0000";
+                setTimeout(connectWS, 2000);
+            };
+        }
+
+        const sendKeyCmd = (hid, action) => {
+            if (socket?.readyState === WebSocket.OPEN) {
+                socket.send(new Uint8Array([hid, action === 'down' ? 1 : 0]).buffer);
+                addLog(`KEY> hid:0x${hid.toString(16)} act:${action}`);
+            }
+        };
+
+        const sendMouseReport = (buttons, lx, ly, rx, ry, wheel) => {
+            if (socket?.readyState === WebSocket.OPEN) {
+                socket.send(new Uint8Array([buttons, lx, ly, rx, ry, wheel & 0xFF]).buffer);
+            }
+        };
+
+        // --- Gamepad（マウス偽装）監視ループ ---
+        function transmissionLoop() {
+            if (gamepadIndex !== null) {
+                const gp = navigator.getGamepads()[gamepadIndex];
+
+                if (gp && gp.axes.length >= 4) {
+                    // デバッグ表示用: 生のFloat値と押されているボタン番号を取得
+                    const rawAxes = gp.axes.map(a => a.toFixed(3)).join(', ');
+                    const rawBtns = gp.buttons.map((b, i) => b.pressed ? i : -1).filter(i => i !== -1).join(',');
+
+                    // seqの抽出 (-1.0〜1.0 -> 0〜255)
+                    const seq = Math.max(0, Math.min(255, Math.round((gp.buttons[6]?.value + 1) * 127.5)));
+
+                    // リアルタイムステータスパネルを更新
+                    //rtStatus.innerText = `RAW AXES:\n[${rawAxes}]\nRAW BTNS: [${rawBtns}]\nSEQ: ${seq} (Last: ${lastGamepadSeq})`;
+                    rtStatus.innerText = `RAW AXES: [${rawAxes}]\nRAW BTNS: [${rawBtns}]`;
+
+                    // シーケンス番号が更新された時だけ送信
+                    if (seq !== lastGamepadSeq) {
+                        lastGamepadSeq = seq;
+
+                        // 一旦フロート値から0〜255の値を復元
+                        const raw_lx = Math.max(0, Math.min(255, Math.round((gp.axes[0] + 1) * 127.5)));
+                        const raw_ly = Math.max(0, Math.min(255, Math.round((gp.axes[1] + 1) * 127.5)));
+                        const raw_rx = Math.max(0, Math.min(255, Math.round((gp.axes[2] + 1) * 127.5)));
+                        const raw_ry = Math.max(0, Math.min(255, Math.round((gp.axes[3] + 1) * 127.5)));
+
+                        // 加算された 38 を引いて元のマウスデルタ値に戻す（マイナスの動きも正しく復元される）
+                        const lx = (raw_lx - 38) & 0xFF;
+                        const ly = (raw_ly - 38) & 0xFF;
+                        const rx = (raw_rx - 38) & 0xFF;
+                        const ry = (raw_ry - 38) & 0xFF;
+
+                        let buttons = 0;
+                        if (gp.buttons[2]?.pressed) buttons |= 0x01; // Left
+                        if (gp.buttons[0]?.pressed) buttons |= 0x02; // Right
+                        if (gp.buttons[1]?.pressed) buttons |= 0x04; // Middle
+                        if (gp.buttons[3]?.pressed) buttons |= 0x08; // Back
+                        if (gp.buttons[4]?.pressed) buttons |= 0x10; // Forward
+
+                        let wheel = 0;
+                        if (gp.buttons[8]?.pressed) wheel = 1;       // Up
+                        else if (gp.buttons[9]?.pressed) wheel = -1; // Down
+
+                        // 復元した値と送信ログを表示
+                        //addLog(`TX> l(${lx},${ly}) r(${rx},${ry}) w:${wheel} b:${buttons}`);
+                        sendMouseReport(buttons, lx, ly, rx, ry, wheel * WHEEL_SPEED);
+                    }
+                } else {
+                    rtStatus.innerText = `Gamepad Connected, but axes count is ${gp ? gp.axes.length : 0} (Needs 4)`;
+                }
+            } else {
+                rtStatus.innerText = "Waiting for Gamepad...";
+            }
+            requestAnimationFrame(transmissionLoop);
+        }
+
+        // イベントリスナー
+        window.addEventListener("gamepadconnected", (e) => {
+            gamepadIndex = e.gamepad.index;
+            addLog(`Gamepad Connected: ${e.gamepad.id}`);
+        });
+
+        window.addEventListener("gamepaddisconnected", () => {
+            gamepadIndex = null;
+            addLog("Gamepad Disconnected");
+            rtStatus.innerText = "Waiting for Gamepad...";
+        });
+
+        input.addEventListener('keydown', (e) => {
+            if (e.repeat) return;
+            e.preventDefault();
+            let hid = (e.code === "AltRight") ? 0x87 : HID_MAP[e.code];
+            if (!hid) hid = ANDROID_MAP[e.key] || ANDROID_MAP[e.key.toLowerCase()];
+            if (hid) {
+                isPhysicalKeyDown = true;
+                sendKeyCmd(hid, 'down');
+            }
+        });
+
+        input.addEventListener('keyup', (e) => {
+            let hid = (e.code === "AltRight") ? 0x87 : HID_MAP[e.code];
+            if (!hid) hid = ANDROID_MAP[e.key] || ANDROID_MAP[e.key.toLowerCase()];
+            if (hid) {
+                isPhysicalKeyDown = false;
+                sendKeyCmd(hid, 'up');
+            }
+        });
+
+        input.addEventListener('input', (e) => {
+            if (isPhysicalKeyDown || !e.data) { input.value = ""; return; }
+            const hid = ANDROID_MAP[e.data.toLowerCase()];
+            if (hid) {
+                sendKeyCmd(hid, 'down');
+                setTimeout(() => sendKeyCmd(hid, 'up'), 50);
+            }
+            input.value = "";
+        });
+
+        input.addEventListener('focus', () => {
+            guideText.innerText = "ACTIVE (READY TO TYPE)";
+            guideText.style.color = "#00ff00";
+            guideText.style.borderColor = "#00ff00";
+        });
+
+        input.addEventListener('blur', () => {
+            guideText.innerText = "TAP TO ACTIVATE";
+            guideText.style.color = "#00fbff";
+            guideText.style.borderColor = "#00fbff";
+        });
+
+        function btnAction(btnNum) {
+            if (btnNum === 1) {
+                if (confirm('Reboot M5AtomS3?')) {
+                    fetch(`http://${ATOM_IP}/reboot`)
+                        .then(res => res.text())
+                        .then(txt => addLog(`Reboot: ${txt}`))
+                        .catch(err => addLog(`Reboot Error: ${err}`));
+                }
+            } else {
+                addLog(`Btn ${btnNum} pressed (Not implemented)`);
+            }
+        }
+
+        // 起動
+        connectWS();
+        transmissionLoop();
+        document.body.addEventListener('click', () => input.focus());
+        window.onload = () => input.focus();
+    </script>
+</body>
+
+</html>
