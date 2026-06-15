@@ -53,7 +53,34 @@ public:
         // Buttons
         report[7] = 0x08 | (buttons << 4);
         report[8] = (buttons >> 4);
-        
+
+        hid.SendReport(0x01, report, sizeof(report));
+    }
+
+    // 本番用: seqをスティック(report[0]=変化検知)、dx/dyをクリーンなトリガー(report[4],[5])に載せる
+    void sendMouse(uint8_t seq, uint8_t txByte, uint8_t tyByte, uint16_t buttons) {
+        uint8_t report[63] = {0};
+        report[0] = seq;     // X  -> axes[0]   変化検知用seq（値の正確さは不要）
+        report[1] = 0x80;    // Y  中立
+        report[2] = 0x80;    // Z  中立
+        report[3] = 0x80;    // Rz 中立
+        report[4] = txByte;  // Rx -> buttons[6] (dx + 128)
+        report[5] = tyByte;  // Ry -> buttons[7] (dy + 128)
+        report[7] = 0x08 | (buttons << 4);
+        report[8] = (buttons >> 4);
+        hid.SendReport(0x01, report, sizeof(report));
+    }
+
+    // 計測用: 既知のテスト値 t を stick(report[0]) と trigger(report[4],[5]) に同時に載せる
+    void sendCalib(uint8_t t) {
+        uint8_t report[63] = {0};
+        report[0] = t;    // X  -> axes[0]   スティック(iOSの補正あり)
+        report[1] = 0x80; // Y  中立
+        report[2] = 0x80; // Z
+        report[3] = 0x80; // Rz
+        report[4] = t;    // Rx -> buttons[6] L2トリガー(補正なし想定)
+        report[5] = t;    // Ry -> buttons[7] R2トリガー
+        report[7] = 0x08; // buttons 中立
         hid.SendReport(0x01, report, sizeof(report));
     }
 };
@@ -62,26 +89,31 @@ FakeDualSense dualsense;
 const char* TARGET_MOUSE_ADDR = "a8:10:87:18:f6:37";
 static bool mouseConnected = false;
 static NimBLEClient* pClient = nullptr;
-uint8_t packet_seq = 0; // 送信パケットのシーケンス番号
+uint8_t packet_seq = 0; // 送信パケットのシーケンス番号（変化検知用、スティックに載せる）
+
+// マウス報告(高レート)を取りこぼさないため累積し、loop側で約60Hzでまとめて送る
+portMUX_TYPE accMux = portMUX_INITIALIZER_UNLOCKED;
+volatile int32_t accX = 0;
+volatile int32_t accY = 0;
+volatile int16_t accWheel = 0;
+volatile uint16_t latchBtns = 0;
+const uint32_t EMIT_MS = 16; // 約60Hz
 
 void notifyCallback(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
     if (length >= 6) {
-        uint8_t mouse_btns = pData[0];
-        uint8_t lx = (pData[1] + 38) & 0xFF;
-        uint8_t ly = (pData[2] + 38) & 0xFF;
-        uint8_t rx = (pData[3] + 38) & 0xFF;
-        uint8_t ry = (pData[4] + 38) & 0xFF;
-        int8_t wheel = pData[5];
+        // マウスは16bitのdx/dy(下位,上位の順)を報告する
+        int16_t dx = (int16_t)(pData[1] | (pData[2] << 8));
+        int16_t dy = (int16_t)(pData[3] | (pData[4] << 8));
+        int8_t wheel = (int8_t)pData[5];
+        uint16_t btns = pData[0] & 0x1F;
 
-        // 最初の5ボタンをコピー
-        uint16_t gp_btns = mouse_btns & 0x1F; 
-        
-        // ホイールの上下をボタン8と9にアサイン
-        if (wheel > 0) gp_btns |= (1 << 8);       // ホイール 奥（上）
-        else if (wheel < 0) gp_btns |= (1 << 9);  // ホイール 手前（下）
-
-        packet_seq += 10; // パケットが来るたびにカウントアップ
-        dualsense.sendControllerData(lx, ly, rx, ry, packet_seq, gp_btns);
+        // ここでは送らず累積するだけ（取りこぼし防止）
+        portENTER_CRITICAL(&accMux);
+        accX += dx;
+        accY += dy;
+        accWheel += wheel;
+        latchBtns = btns;
+        portEXIT_CRITICAL(&accMux);
     }
 }
 
@@ -119,24 +151,83 @@ void setup() {
     hid.begin();
     USB.begin();
 
+#ifndef CALIB_MODE
     NimBLEDevice::init("");
     NimBLEDevice::setSecurityAuth(true, true, true);
     NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
+#endif
+}
+
+// 累積分を±127にクランプしてトリガーに載せ、超過分は次フレームへ繰り越す（シグマ・デルタ）
+void emitMouse() {
+    int32_t sx, sy; int16_t sw; uint16_t rawBtns;
+    portENTER_CRITICAL(&accMux);
+    sx = accX; sy = accY; sw = accWheel; rawBtns = latchBtns;
+    accX = 0; accY = 0; accWheel = 0;
+    portEXIT_CRITICAL(&accMux);
+
+    int32_t dx = sx; if (dx > 127) dx = 127; else if (dx < -128) dx = -128;
+    int32_t dy = sy; if (dy > 127) dy = 127; else if (dy < -128) dy = -128;
+    int32_t remX = sx - dx, remY = sy - dy;
+    if (remX || remY) { // 繰り越し（取りこぼさず、高速フリックは数フレームに分散）
+        portENTER_CRITICAL(&accMux);
+        accX += remX; accY += remY;
+        portEXIT_CRITICAL(&accMux);
+    }
+
+    uint16_t gp_btns = rawBtns & 0x1F;
+    if (sw > 0) gp_btns |= (1 << 8);
+    else if (sw < 0) gp_btns |= (1 << 9);
+
+    // 完全アイドル（動き無し・ボタン変化無し・直前も静止）なら送らずseqを止める
+    static uint16_t lastBtns = 0;
+    static bool lastMoving = false;
+    bool moving = (dx != 0 || dy != 0 || sw != 0);
+    if (!moving && gp_btns == lastBtns && !lastMoving) return;
+    lastBtns = gp_btns;
+    lastMoving = moving;
+
+    packet_seq += 37; // emitごとに動かす（iPadはスティックで変化検知）
+    dualsense.sendMouse(packet_seq, (uint8_t)(dx + 128), (uint8_t)(dy + 128), gp_btns);
 }
 
 void loop() {
+#ifdef CALIB_MODE
+    // 既知のテスト値 t を 0..255 でゆっくり掃引（計測用）。
+    static uint8_t t = 0;
+    static uint32_t last = 0;
+    if (millis() - last >= 50) {
+        last = millis();
+        dualsense.sendCalib(t);
+        t++;
+    }
+    delay(1);
+#else
     if (!mouseConnected) {
-        if (pClient == nullptr) {
-            pClient = NimBLEDevice::createClient();
-            pClient->setClientCallbacks(new MyClientCallbacks(), false);
-        }
-        if (!pClient->isConnected()) {
-            if (pClient->connect(NimBLEAddress(TARGET_MOUSE_ADDR))) {
-                if (subscribeHID(pClient)) {
-                    mouseConnected = true;
+        static uint32_t lastTry = 0;
+        if (millis() - lastTry > 2000) {
+            lastTry = millis();
+            if (pClient == nullptr) {
+                pClient = NimBLEDevice::createClient();
+                pClient->setClientCallbacks(new MyClientCallbacks(), false);
+            }
+            if (!pClient->isConnected()) {
+                if (pClient->connect(NimBLEAddress(TARGET_MOUSE_ADDR))) {
+                    if (subscribeHID(pClient)) {
+                        mouseConnected = true;
+                    }
                 }
             }
         }
+        delay(20);
+        return;
     }
-    delay(mouseConnected ? 100 : 2000);
+
+    static uint32_t lastEmit = 0;
+    if (millis() - lastEmit >= EMIT_MS) {
+        lastEmit = millis();
+        emitMouse();
+    }
+    delay(1);
+#endif
 }

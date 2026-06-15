@@ -176,7 +176,8 @@
         const guideText = document.getElementById('guide-text');
 
         let socket = null;
-        let isPhysicalKeyDown = false;
+        const pressedKeys = new Map(); // identifier(e.code等) -> hid。確実にupを送るための状態管理
+        let lastPhysKeyTs = 0;          // 物理キー処理の直近時刻（inputイベントのエコー抑制用）
         let gamepadIndex = null;
         let lastGamepadSeq = -1;
 
@@ -208,6 +209,19 @@
             }
         };
 
+        // e.code優先、無ければe.keyからHIDを解決
+        function hidFromEvent(e) {
+            let hid = (e.code === "AltRight") ? 0x87 : HID_MAP[e.code];
+            if (!hid) hid = ANDROID_MAP[e.key] || ANDROID_MAP[(e.key || "").toLowerCase()];
+            return hid || 0;
+        }
+
+        // 押下中の全キーを解放（フォーカス喪失・非表示時の刺さり防止の最終防衛線）
+        function releaseAllKeys() {
+            for (const hid of new Set(pressedKeys.values())) sendKeyCmd(hid, 'up');
+            pressedKeys.clear();
+        }
+
         const sendMouseReport = (buttons, lx, ly, rx, ry, wheel) => {
             if (socket?.readyState === WebSocket.OPEN) {
                 socket.send(new Uint8Array([buttons, lx, ly, rx, ry, wheel & 0xFF]).buffer);
@@ -215,37 +229,20 @@
         };
 
         // --- Gamepad（マウス偽装）監視ループ ---
+        // dx/dy はクリーンなトリガー(btn6/btn7)から ±127 を復元（btn×255-128）。
+        // seq は変化検知用にスティック(axis0)から読む（値の正確さは不要、粗く量子化してジッタを弾く）。
         function transmissionLoop() {
             if (gamepadIndex !== null) {
                 const gp = navigator.getGamepads()[gamepadIndex];
 
-                if (gp && gp.axes.length >= 4) {
-                    // デバッグ表示用: 生のFloat値と押されているボタン番号を取得
-                    const rawAxes = gp.axes.map(a => a.toFixed(3)).join(', ');
-                    const rawBtns = gp.buttons.map((b, i) => b.pressed ? i : -1).filter(i => i !== -1).join(',');
+                if (gp && gp.axes.length >= 1 && gp.buttons.length >= 10) {
+                    const seq = Math.round((gp.axes[0] + 1) * 64); // 粗量子化(0..128)で変化検知
 
-                    // seqの抽出 (-1.0〜1.0 -> 0〜255)
-                    const seq = Math.max(0, Math.min(255, Math.round((gp.buttons[6]?.value + 1) * 127.5)));
-
-                    // リアルタイムステータスパネルを更新
-                    //rtStatus.innerText = `RAW AXES:\n[${rawAxes}]\nRAW BTNS: [${rawBtns}]\nSEQ: ${seq} (Last: ${lastGamepadSeq})`;
-                    rtStatus.innerText = `RAW AXES: [${rawAxes}]\nRAW BTNS: [${rawBtns}]`;
-
-                    // シーケンス番号が更新された時だけ送信
                     if (seq !== lastGamepadSeq) {
                         lastGamepadSeq = seq;
 
-                        // 一旦フロート値から0〜255の値を復元
-                        const raw_lx = Math.max(0, Math.min(255, Math.round((gp.axes[0] + 1) * 127.5)));
-                        const raw_ly = Math.max(0, Math.min(255, Math.round((gp.axes[1] + 1) * 127.5)));
-                        const raw_rx = Math.max(0, Math.min(255, Math.round((gp.axes[2] + 1) * 127.5)));
-                        const raw_ry = Math.max(0, Math.min(255, Math.round((gp.axes[3] + 1) * 127.5)));
-
-                        // 加算された 38 を引いて元のマウスデルタ値に戻す（マイナスの動きも正しく復元される）
-                        const lx = (raw_lx - 38) & 0xFF;
-                        const ly = (raw_ly - 38) & 0xFF;
-                        const rx = (raw_rx - 38) & 0xFF;
-                        const ry = (raw_ry - 38) & 0xFF;
+                        const dx = Math.round((gp.buttons[6]?.value || 0) * 255) - 128;
+                        const dy = Math.round((gp.buttons[7]?.value || 0) * 255) - 128;
 
                         let buttons = 0;
                         if (gp.buttons[2]?.pressed) buttons |= 0x01; // Left
@@ -258,12 +255,12 @@
                         if (gp.buttons[8]?.pressed) wheel = 1;       // Up
                         else if (gp.buttons[9]?.pressed) wheel = -1; // Down
 
-                        // 復元した値と送信ログを表示
-                        //addLog(`TX> l(${lx},${ly}) r(${rx},${ry}) w:${wheel} b:${buttons}`);
-                        sendMouseReport(buttons, lx, ly, rx, ry, wheel * WHEEL_SPEED);
+                        // 16bit符号付きを下位/上位バイトに（負値も & で正しく出る）
+                        sendMouseReport(buttons, dx & 0xFF, (dx >> 8) & 0xFF, dy & 0xFF, (dy >> 8) & 0xFF, wheel * WHEEL_SPEED);
+                        rtStatus.innerText = `dx:${dx} dy:${dy} b:${buttons} seq:${seq}`;
                     }
                 } else {
-                    rtStatus.innerText = `Gamepad Connected, but axes count is ${gp ? gp.axes.length : 0} (Needs 4)`;
+                    rtStatus.innerText = "Waiting for Gamepad...";
                 }
             } else {
                 rtStatus.innerText = "Waiting for Gamepad...";
@@ -286,31 +283,45 @@
         input.addEventListener('keydown', (e) => {
             if (e.repeat) return;
             e.preventDefault();
-            let hid = (e.code === "AltRight") ? 0x87 : HID_MAP[e.code];
-            if (!hid) hid = ANDROID_MAP[e.key] || ANDROID_MAP[e.key.toLowerCase()];
-            if (hid) {
-                isPhysicalKeyDown = true;
+            lastPhysKeyTs = Date.now();
+            const hid = hidFromEvent(e);
+            if (!hid) return;
+            const id = e.code || ('k' + hid); // iOSでe.codeが空のときの代替キー
+            if (!pressedKeys.has(id)) {
+                pressedKeys.set(id, hid);
                 sendKeyCmd(hid, 'down');
             }
         });
 
         input.addEventListener('keyup', (e) => {
-            let hid = (e.code === "AltRight") ? 0x87 : HID_MAP[e.code];
-            if (!hid) hid = ANDROID_MAP[e.key] || ANDROID_MAP[e.key.toLowerCase()];
-            if (hid) {
-                isPhysicalKeyDown = false;
+            lastPhysKeyTs = Date.now();
+            const hid = hidFromEvent(e);
+            const id = e.code || ('k' + hid);
+            let released = 0;
+            if (pressedKeys.has(id)) {
+                released = pressedKeys.get(id);
+                pressedKeys.delete(id);
+                sendKeyCmd(released, 'up'); // downで送ったhidを確実に解放
+            } else if (hid) {
+                // iOSがkeyupでe.codeを落とした場合: 同じhidの押下中キーをhid一致で解放
+                for (const [k, h] of pressedKeys) if (h === hid) pressedKeys.delete(k);
                 sendKeyCmd(hid, 'up');
+                released = hid;
             }
+            // iOS/Safariは Cmd(Meta) 押下中、他キーの keyup を握りつぶす。
+            // Meta(0x83/0x87=Win) が離れたら取り残された押下中キーを全解放する。
+            if (released === 0x83 || released === 0x87) releaseAllKeys();
         });
 
         input.addEventListener('input', (e) => {
-            if (isPhysicalKeyDown || !e.data) { input.value = ""; return; }
+            input.value = "";
+            // 物理キーのエコー（直近150ms以内）は keydown/keyup 側で処理済みなので無視
+            if (!e.data || Date.now() - lastPhysKeyTs < 150) return;
             const hid = ANDROID_MAP[e.data.toLowerCase()];
             if (hid) {
                 sendKeyCmd(hid, 'down');
                 setTimeout(() => sendKeyCmd(hid, 'up'), 50);
             }
-            input.value = "";
         });
 
         input.addEventListener('focus', () => {
@@ -324,6 +335,10 @@
             guideText.style.color = "#00fbff";
             guideText.style.borderColor = "#00fbff";
         });
+
+        // 最終防衛線: 本当に裏に回った/離脱した時だけ全解放（HUDやフォーカス移動では発火しない）
+        window.addEventListener('pagehide', releaseAllKeys);
+        document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAllKeys(); });
 
         function btnAction(btnNum) {
             if (btnNum === 1) {

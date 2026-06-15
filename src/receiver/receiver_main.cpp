@@ -6,16 +6,25 @@
 #include <WiFi.h>
 #include <ArduinoWebsockets.h>
 #include <WebServer.h>
+#include <vector>
 
 using namespace websockets;
 WebsocketsServer wsServer;
-WebsocketsClient client;  // グローバルに保持してブロッキングを回避
+// 複数クライアント同時接続（例: iPad=キーボード, Android=マウス）を保持する
+std::vector<WebsocketsClient> clients;
+const size_t MAX_CLIENTS = 4;
 WebServer httpServer(80); // リブート用HTTPサーバー
 USBHIDKeyboard Keyboard;
 USBHIDMouse Mouse;
+#ifndef WIFI_SSID
+#define WIFI_SSID "YOUR_SSID"
+#endif
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD "YOUR_PASSWORD"
+#endif
 
-const char* ssid = "YOUR_SSID";
-const char* password = "YOUR_PASSWORD";
+const char* ssid = WIFI_SSID;
+const char* password = WIFI_PASSWORD;
 
 unsigned long lastActivity = 0;
 const unsigned long TIMEOUT_MS = 5000;
@@ -69,6 +78,7 @@ void setup() {
     WiFi.setSleep(false);
 
     wsServer.listen(81);
+    clients.reserve(MAX_CLIENTS); // 再確保による接続/コールバックの破壊を防ぐ
 
     // リブート用エンドポイントの設定
     httpServer.on("/reboot", []() {
@@ -82,22 +92,29 @@ void setup() {
 void loop() {
     httpServer.handleClient(); // Webサーバーの処理を回す
 
-    // 新しいクライアントからの接続を受け付ける
+    // 新しいクライアントからの接続を受け付ける（複数同時に保持）
     if (wsServer.poll()) {
         WebsocketsClient newClient = wsServer.accept();
         if (newClient.available()) {
-            // 既存の接続があれば破棄する
-            if (client.available()) {
-               client.close();
+            // 上限に達していたら最古の接続を切って受け入れる
+            if (clients.size() >= MAX_CLIENTS) {
+                clients.front().close();
+                clients.erase(clients.begin());
             }
-            client = newClient; // 新しい接続で上書き
-            client.onMessage(onBinaryMessage);
+            clients.push_back(newClient);
         }
     }
-        
-    // 接続中のクライアントがある場合のみ処理
-    if (client.available()) {
-        client.poll();
+
+    // 全クライアントを処理し、切断済みは除去する
+    for (size_t i = 0; i < clients.size();) {
+        if (clients[i].available()) {
+            // コピー/ムーブでコールバックが失われても確実に拾えるよう毎回設定
+            clients[i].onMessage(onBinaryMessage);
+            clients[i].poll();
+            ++i;
+        } else {
+            clients.erase(clients.begin() + i);
+        }
     }
         
     // 無操作時の安全対策 (接続状態に関わらず常駐させることで切断直後の押しっぱなしも防ぐ)

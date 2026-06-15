@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <style>
+        body, html {
+            margin: 0; padding: 0; background: #0a0a0a; color: #ddd;
+            font-family: monospace; font-size: 15px; overflow-x: hidden;
+        }
+        #status { padding: 10px 14px; font-weight: bold; border-bottom: 1px solid #333; }
+        .ok { color: #00ff66; } .bad { color: #ff5555; }
+        #help { padding: 8px 14px; color: #ffcc00; font-size: 13px; white-space: pre-wrap; border-bottom: 1px solid #333; }
+        button { font-size: 16px; padding: 8px 16px; margin: 8px 14px; background: #222; color: #eee; border: 1px solid #555; border-radius: 6px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid #1d1d1d; }
+        th { color: #888; font-weight: normal; text-align: right; }
+        td:first-child, th:first-child { text-align: left; color: #66ccff; }
+        tr.active td { color: #fff; }
+        tr.idle td { color: #555; }
+        .hl { color: #00ff66 !important; }     /* small step = good resolution */
+        .warn { color: #ff8844 !important; }    /* big jump = dropped motion */
+    </style>
+</head>
+
+<body>
+    <div id="status" class="bad">Gamepad: waiting… (connect dongle, press a mouse button to wake it)</div>
+    <div id="help">手順: ①ドングル接続 ②マウスのボタンを一度押して認識 ③ゆっくり小さく動かす→動いてる軸の minStep が低速分解能(小さいほど良い) ④ゆっくり端まで→ min/max とデッドゾーン ⑤速く動かす→ maxJump(大きい=取りこぼし)。Reset で各計測をやり直し。</div>
+    <button onclick="resetStats()">Reset</button>
+    <button onclick="copyResults()">結果をコピー</button>
+    <table id="grid">
+        <thead>
+            <tr><th>field</th><th>value</th><th>distinct</th><th>minStep</th><th>min</th><th>max</th><th>maxJump</th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+    </table>
+
+    <script>
+        const rowsEl = document.getElementById('rows');
+        const statusEl = document.getElementById('status');
+        let gpIndex = null;
+        let frames = 0;
+
+        // field -> { set, min, max, last, maxJump, changedFrames }
+        const stats = {};
+        function f(name) {
+            if (!stats[name]) stats[name] = { set: new Set(), min: Infinity, max: -Infinity, last: null, maxJump: 0, changed: 0 };
+            return stats[name];
+        }
+        function resetStats() { for (const k in stats) delete stats[k]; frames = 0; }
+
+        function record(name, v) {
+            const s = f(name);
+            // 量子化を見るため小数5桁で丸めて集合に入れる
+            s.set.add(Math.round(v * 100000) / 100000);
+            if (v < s.min) s.min = v;
+            if (v > s.max) s.max = v;
+            if (s.last !== null) {
+                const jump = Math.abs(v - s.last);
+                if (jump > 1e-6) s.changed++;
+                if (jump > s.maxJump) s.maxJump = jump;
+            }
+            s.last = v;
+        }
+
+        function minStep(set) {
+            const arr = [...set].sort((a, b) => a - b);
+            let m = Infinity;
+            for (let i = 1; i < arr.length; i++) {
+                const d = arr[i] - arr[i - 1];
+                if (d > 1e-9 && d < m) m = d;
+            }
+            return isFinite(m) ? m : 0;
+        }
+
+        window.addEventListener('gamepadconnected', (e) => {
+            gpIndex = e.gamepad.index;
+            statusEl.textContent = `Gamepad: ${e.gamepad.id}  (axes:${e.gamepad.axes.length} buttons:${e.gamepad.buttons.length})`;
+            statusEl.className = 'ok';
+        });
+        window.addEventListener('gamepaddisconnected', () => {
+            gpIndex = null;
+            statusEl.textContent = 'Gamepad: disconnected';
+            statusEl.className = 'bad';
+        });
+
+        function fieldsOf(gp) {
+            const out = [];
+            gp.axes.forEach((v, i) => out.push(['axis' + i, v]));
+            gp.buttons.forEach((b, i) => out.push(['btn' + i, b.value]));
+            return out;
+        }
+
+        function loop() {
+            const gp = gpIndex != null ? navigator.getGamepads()[gpIndex] : null;
+            if (gp) {
+                frames++;
+                const fields = fieldsOf(gp);
+                fields.forEach(([n, v]) => record(n, v));
+                render(fields);
+            }
+            requestAnimationFrame(loop);
+        }
+
+        function render(fields) {
+            let html = '';
+            for (const [n, v] of fields) {
+                const s = f(n);
+                const distinct = s.set.size;
+                // ノイズ低減: 一度も動いてない(distinct<=1)軸/ボタンは薄く
+                const active = distinct > 1;
+                const step = minStep(s.set);
+                const stepCls = (active && step > 0 && step < 0.02) ? 'hl' : '';
+                const jumpCls = (s.maxJump > 0.15) ? 'warn' : '';
+                html += `<tr class="${active ? 'active' : 'idle'}">`
+                    + `<td>${n}</td>`
+                    + `<td>${v.toFixed(3)}</td>`
+                    + `<td>${distinct}</td>`
+                    + `<td class="${stepCls}">${active ? step.toFixed(5) : '-'}</td>`
+                    + `<td>${active ? s.min.toFixed(3) : '-'}</td>`
+                    + `<td>${active ? s.max.toFixed(3) : '-'}</td>`
+                    + `<td class="${jumpCls}">${active ? s.maxJump.toFixed(4) : '-'}</td>`
+                    + `</tr>`;
+            }
+            rowsEl.innerHTML = html;
+        }
+
+        function copyResults() {
+            let txt = `frames=${frames}\n`;
+            for (const n of Object.keys(stats)) {
+                const s = stats[n];
+                if (s.set.size <= 1) continue;
+                txt += `${n}: distinct=${s.set.size} minStep=${minStep(s.set).toFixed(5)} `
+                    + `range=[${s.min.toFixed(3)},${s.max.toFixed(3)}] maxJump=${s.maxJump.toFixed(4)} changedFrames=${s.changed}\n`;
+            }
+            navigator.clipboard?.writeText(txt);
+            statusEl.textContent = 'コピーしたよ:\n' + txt;
+            statusEl.className = 'ok';
+            statusEl.style.whiteSpace = 'pre-wrap';
+        }
+
+        loop();
+    </script>
+</body>
+
+</html>

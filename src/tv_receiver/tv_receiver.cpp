@@ -4,9 +4,15 @@
 #include "USBHIDConsumerControl.h"
 #include <WiFi.h>
 #include <WebServer.h>
+#ifndef WIFI_SSID
+#define WIFI_SSID "YOUR_SSID"
+#endif
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD "YOUR_PASSWORD"
+#endif
 
-const char* ssid = "YOUR_SSID";
-const char* password = "YOUR_PASSWORD";
+const char* ssid = WIFI_SSID;
+const char* password = WIFI_PASSWORD;
 
 USBHIDKeyboard Keyboard;
 USBHIDConsumerControl Consumer;
