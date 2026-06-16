@@ -129,12 +129,12 @@
                 autocorrect="off" inputmode="email">
         </div>
         <div id="button-zone">
-            <div class="action-btn" onclick="btnAction(1)" style="color: #ff4444; font-weight: bold;">Reboot</div>
-            <div class="action-btn" onclick="btnAction(2)">Btn 2</div>
-            <div class="action-btn" onclick="btnAction(3)">Btn 3</div>
-            <div class="action-btn" onclick="btnAction(4)">Btn 4</div>
-            <div class="action-btn" onclick="btnAction(5)">Btn 5</div>
-            <div class="action-btn" onclick="btnAction(6)">Btn 6</div>
+            <div class="action-btn" onclick="btnAction(1)">Lock</div>
+            <div class="action-btn" onclick="btnAction(2)">Desktop</div>
+            <div class="action-btn" onclick="btnAction(3)">TaskMgr</div>
+            <div class="action-btn" onclick="btnAction(4)">Snip</div>
+            <div class="action-btn" onclick="btnAction(5)">Esc</div>
+            <div class="action-btn" onclick="btnAction(6)" style="color: #ff4444;">Reboot</div>
         </div>
     </div>
 
@@ -340,16 +340,29 @@
         window.addEventListener('pagehide', releaseAllKeys);
         document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAllKeys(); });
 
+        // 修飾キー(0x80-0x87)＋通常キーのコンボをWSで送る。押下順→逆順で解放。
+        // HID: Ctrl=0x80 Shift=0x81 Alt=0x82 Win=0x83 / L=0x0F D=0x07 S=0x16 Esc=0x29
+        function sendCombo(...hids) {
+            if (socket?.readyState !== WebSocket.OPEN) { addLog('WS not open'); return; }
+            hids.forEach(h => sendKeyCmd(h, 'down'));
+            setTimeout(() => [...hids].reverse().forEach(h => sendKeyCmd(h, 'up')), 60);
+        }
+
         function btnAction(btnNum) {
-            if (btnNum === 1) {
-                if (confirm('Reboot M5AtomS3?')) {
-                    fetch(`http://${ATOM_IP}/reboot`)
-                        .then(res => res.text())
-                        .then(txt => addLog(`Reboot: ${txt}`))
-                        .catch(err => addLog(`Reboot Error: ${err}`));
-                }
-            } else {
-                addLog(`Btn ${btnNum} pressed (Not implemented)`);
+            switch (btnNum) {
+                case 1: sendCombo(0x83, 0x0F); addLog('Lock (Win+L)'); break;
+                case 2: sendCombo(0x83, 0x07); addLog('Desktop (Win+D)'); break;
+                case 3: sendCombo(0x80, 0x81, 0x29); addLog('TaskMgr (Ctrl+Shift+Esc)'); break;
+                case 4: sendCombo(0x83, 0x81, 0x16); addLog('Snip (Win+Shift+S)'); break;
+                case 5: sendCombo(0x29); addLog('Esc'); break;
+                case 6:
+                    if (confirm('Reboot the receiver (AtomS3)?')) {
+                        fetch(`http://${ATOM_IP}/reboot`)
+                            .then(res => res.text())
+                            .then(txt => addLog(`Reboot: ${txt}`))
+                            .catch(err => addLog(`Reboot Error: ${err}`));
+                    }
+                    break;
             }
         }
 
