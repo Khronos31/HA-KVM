@@ -10,6 +10,9 @@
 #ifndef WIFI_PASSWORD
 #define WIFI_PASSWORD "YOUR_PASSWORD"
 #endif
+#ifndef DEVICE_NAME
+#define DEVICE_NAME "kvm-unknown"
+#endif
 
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
@@ -81,16 +84,17 @@ void setup() {
     Consumer.begin();
     USB.begin();
 
+    WiFi.setHostname(DEVICE_NAME);
     WiFi.begin(ssid, password);
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
     }
     WiFi.setSleep(false);
 
-    // HTTPエンドポイントの登録
     server.on("/key", HTTP_GET, handleKey);
     server.on("/type", HTTP_GET, handleType);
     server.on("/consumer", HTTP_GET, handleConsumer);
+    server.on("/name", HTTP_GET, []() { server.send(200, "text/plain", DEVICE_NAME); });
     server.begin();
 }
 

@@ -21,6 +21,9 @@ using namespace websockets;
 #ifndef WIFI_PASSWORD
 #define WIFI_PASSWORD "YOUR_PASSWORD"
 #endif
+#ifndef DEVICE_NAME
+#define DEVICE_NAME "kvm-unknown"
+#endif
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
 const int BTN_PIN = 41; // AtomS3U 本体ボタン
@@ -96,16 +99,18 @@ void setup() {
 
     pinMode(BTN_PIN, INPUT_PULLUP);
 
+    WiFi.setHostname(DEVICE_NAME);
     WiFi.begin(ssid, password); // 非ブロッキング
     WiFi.setSleep(false);
 
-    httpServer.on("/reboot", []() { httpServer.send(200, "text/plain", "reboot"); delay(300); ESP.restart(); });
-    httpServer.on("/power",  []() { sysTap(SYSTEM_CONTROL_POWER_OFF);  httpServer.send(200, "text/plain", "power"); });
-    httpServer.on("/sleep",  []() { sysTap(SYSTEM_CONTROL_STANDBY);    httpServer.send(200, "text/plain", "sleep"); });
-    httpServer.on("/wake",   []() { sysTap(SYSTEM_CONTROL_WAKE_HOST);  httpServer.send(200, "text/plain", "wake"); });
-    httpServer.on("/volup",  []() { consumerTap(CONSUMER_CONTROL_VOLUME_INCREMENT); httpServer.send(200, "text/plain", "volup"); });
-    httpServer.on("/voldown",[]() { consumerTap(CONSUMER_CONTROL_VOLUME_DECREMENT); httpServer.send(200, "text/plain", "voldown"); });
-    httpServer.on("/mute",   []() { consumerTap(CONSUMER_CONTROL_MUTE);             httpServer.send(200, "text/plain", "mute"); });
+    httpServer.on("/reboot",  []() { httpServer.send(200, "text/plain", "reboot"); delay(300); ESP.restart(); });
+    httpServer.on("/name",    []() { httpServer.send(200, "text/plain", DEVICE_NAME); });
+    httpServer.on("/power",   []() { sysTap(SYSTEM_CONTROL_POWER_OFF);  httpServer.send(200, "text/plain", "power"); });
+    httpServer.on("/sleep",   []() { sysTap(SYSTEM_CONTROL_STANDBY);    httpServer.send(200, "text/plain", "sleep"); });
+    httpServer.on("/wake",    []() { sysTap(SYSTEM_CONTROL_WAKE_HOST);  httpServer.send(200, "text/plain", "wake"); });
+    httpServer.on("/volup",   []() { consumerTap(CONSUMER_CONTROL_VOLUME_INCREMENT); httpServer.send(200, "text/plain", "volup"); });
+    httpServer.on("/voldown", []() { consumerTap(CONSUMER_CONTROL_VOLUME_DECREMENT); httpServer.send(200, "text/plain", "voldown"); });
+    httpServer.on("/mute",    []() { consumerTap(CONSUMER_CONTROL_MUTE);             httpServer.send(200, "text/plain", "mute"); });
     httpServer.begin();
 }
 

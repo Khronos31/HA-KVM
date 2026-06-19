@@ -22,6 +22,9 @@ USBHIDMouse Mouse;
 #ifndef WIFI_PASSWORD
 #define WIFI_PASSWORD "YOUR_PASSWORD"
 #endif
+#ifndef DEVICE_NAME
+#define DEVICE_NAME "kvm-unknown"
+#endif
 
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
@@ -73,6 +76,7 @@ void setup() {
     Mouse.begin();
     USB.begin();
 
+    WiFi.setHostname(DEVICE_NAME);
     WiFi.begin(ssid, password);
     while (WiFi.status() != WL_CONNECTED) delay(500);
     WiFi.setSleep(false);
@@ -80,11 +84,13 @@ void setup() {
     wsServer.listen(81);
     clients.reserve(MAX_CLIENTS); // 再確保による接続/コールバックの破壊を防ぐ
 
-    // リブート用エンドポイントの設定
     httpServer.on("/reboot", []() {
         httpServer.send(200, "text/plain", "Rebooting M5AtomS3...");
         delay(500);
         ESP.restart();
+    });
+    httpServer.on("/name", []() {
+        httpServer.send(200, "text/plain", DEVICE_NAME);
     });
     httpServer.begin();
 }
